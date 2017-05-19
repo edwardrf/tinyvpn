@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/signal"
 
 	"github.com/op/go-logging"
 
@@ -55,7 +56,8 @@ func runClient(serverAddr string, authPort, port int, keyfile string, protocol s
 
 	// Create local tun device
 	book := &StaticBook{sk, ip.String()}
-	toTun, fromTun, err := startTUN(ip.String(), MTU, book)
+	tun := Tunnel{Addr: ip.String(), Mtu: MTU, Book: book}
+	toTun, fromTun, err := tun.Start()
 	if err != nil {
 		log.Error("Failed to start Tunnel device:", err)
 		return err
@@ -72,6 +74,16 @@ func runClient(serverAddr string, authPort, port int, keyfile string, protocol s
 	go encryptPackets(fromTun, toServer, ss)
 	go decryptPackets(fromServer, toTun, ss)
 
+	go func() {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt)
+		signal.Notify(c, os.Kill)
+		tun.SetRoute() // Make sure we can catch the stop signals before we setup the routes
+		s := <-c
+		log.Infof("Got signal: %v, restore route table to original default route\n", s)
+		tun.ResetRoute()
+	}()
+
 	return nil
 }
 
@@ -84,7 +96,8 @@ func runServer(serverAddr, vpnnet, keyfile string, authPort, tcpPort, udpPort in
 
 	// Create local tun device
 	book := newDynBook()
-	toTun, fromTun, err := startTUN(vpnnet, MTU, book)
+	tun := Tunnel{Addr: vpnnet, Mtu: MTU, Book: book}
+	toTun, fromTun, err := tun.Start()
 	if err != nil {
 		log.Error("Failed to start Tunnel device:", err)
 		return err
